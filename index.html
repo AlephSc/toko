@@ -8,13 +8,32 @@
 </head>
 <body>
     <header>
-        <h1>Toko Digital Saya</h1>
+        <h1>Toko Digital</h1>
         <nav>
             <a href="#products">Produk</a>
             <a href="#cart">Keranjang</a>
+            <span id="auth-section">
+                <a href="#" id="login-link">Login</a>
+                <a href="#" id="register-link">Register</a>
+            </span>
+            <span id="user-section" style="display:none;">
+                <span id="username-display"></span>
+                <a href="#" id="logout-link">Logout</a>
+            </span>
         </nav>
     </header>
     <main>
+        <section id="auth-modal" style="display:none;">
+            <div class="modal-content">
+                <h2 id="auth-title">Login</h2>
+                <input type="text" id="username" placeholder="Username">
+                <input type="password" id="password" placeholder="Password">
+                <input type="email" id="email" placeholder="Email (optional)" style="display:none;">
+                <button id="auth-submit">Submit</button>
+                <button id="auth-cancel">Cancel</button>
+                <p id="auth-error"></p>
+            </div>
+        </section>
         <section id="products">
             <h2>Produk</h2>
             <div id="product-list"></div>
