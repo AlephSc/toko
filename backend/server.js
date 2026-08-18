@@ -2,19 +2,28 @@ import express from 'express';
 import session from 'express-session';
 import bcrypt from 'bcrypt';
 import Database from 'better-sqlite3';
+import cors from 'cors';
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 
+app.use(cors({
+  origin: 'http://localhost:3000',
+  credentials: true
+}));
 app.use(express.json());
 app.use(session({
   secret: 'change-this-in-production-to-random-32-char-string',
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, maxAge: 24 * 60 * 60 * 1000 }
+  cookie: { 
+    httpOnly: true, 
+    maxAge: 24 * 60 * 60 * 1000,
+    sameSite: 'lax'
+  }
 }));
 
-const db = new Database('store.db');
+const db = new Database('./backend/store.db');
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,13 +37,16 @@ db.exec(`
     name TEXT NOT NULL,
     price INTEGER NOT NULL,
     description TEXT,
-    stock INTEGER DEFAULT 0
+    stock INTEGER DEFAULT 0,
+    image_url TEXT
   );
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER REFERENCES users(id),
     total INTEGER NOT NULL,
     status TEXT DEFAULT 'pending',
+    payment_status TEXT DEFAULT 'unpaid',
+    payment_url TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS order_items (
@@ -46,6 +58,7 @@ db.exec(`
   );
 `);
 
+// Seed products
 const seedStmt = db.prepare('SELECT COUNT(*) as count FROM products');
 if (seedStmt.get().count === 0) {
   const insert = db.prepare('INSERT INTO products (name, price, description, stock) VALUES (?, ?, ?, ?)');
@@ -59,6 +72,7 @@ function auth(req, res, next) {
   next();
 }
 
+// Auth endpoints
 app.post('/api/register', async (req, res) => {
   const { username, password, email } = req.body;
   if (!username || !password || username.length < 3 || password.length < 6) {
@@ -67,7 +81,9 @@ app.post('/api/register', async (req, res) => {
   const hashed = await bcrypt.hash(password, 10);
   try {
     const result = db.prepare('INSERT INTO users (username, password, email) VALUES (?, ?, ?)').run(username, hashed, email || null);
-    res.json({ success: true, userId: result.lastInsertRowid });
+    req.session.userId = result.lastInsertRowid;
+    req.session.username = username;
+    res.json({ success: true, userId: result.lastInsertRowid, username });
   } catch (e) {
     res.status(409).json({ error: 'Username already exists' });
   }
@@ -95,33 +111,22 @@ app.get('/api/me', auth, (req, res) => {
   res.json(user);
 });
 
+// Products
 app.get('/api/products', (req, res) => {
-  const products = db.prepare('SELECT id, name, price, description, stock FROM products').all();
+  const products = db.prepare('SELECT id, name, price, description, stock, image_url FROM products').all();
   res.json(products);
 });
 
 app.post('/api/products', auth, (req, res) => {
-  const { name, price, description, stock } = req.body;
+  const { name, price, description, stock, image_url } = req.body;
   if (!name || !price || price < 0) return res.status(400).json({ error: 'Invalid product data' });
-  const result = db.prepare('INSERT INTO products (name, price, description, stock) VALUES (?, ?, ?, ?)').run(
-    name, price, description || '', stock || 0
+  const result = db.prepare('INSERT INTO products (name, price, description, stock, image_url) VALUES (?, ?, ?, ?, ?)').run(
+    name, price, description || '', stock || 0, image_url || null
   );
   res.json({ success: true, productId: result.lastInsertRowid });
 });
 
-app.put('/api/products/:id', auth, (req, res) => {
-  const { name, price, description, stock } = req.body;
-  db.prepare('UPDATE products SET name = ?, price = ?, description = ?, stock = ? WHERE id = ?').run(
-    name, price, description, stock, req.params.id
-  );
-  res.json({ success: true });
-});
-
-app.delete('/api/products/:id', auth, (req, res) => {
-  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
-});
-
+// Cart
 app.get('/api/cart', (req, res) => {
   const cart = req.session.cart || [];
   res.json(cart);
@@ -135,22 +140,29 @@ app.post('/api/cart', (req, res) => {
   if (!product) return res.status(404).json({ error: 'Product not found' });
   
   const cart = req.session.cart || [];
-  const existing = cart.find(item => item.productId === productId);
+  const existing = cart.find(i => i.productId === productId);
+  
   if (existing) {
     existing.quantity += quantity;
   } else {
-    cart.push({ productId, quantity, name: product.name, price: product.price });
+    cart.push({
+      productId: product.id,
+      name: product.name,
+      price: product.price,
+      quantity
+    });
   }
+  
   req.session.cart = cart;
   res.json({ success: true, cart });
 });
 
 app.delete('/api/cart/:productId', (req, res) => {
-  const cart = req.session.cart || [];
-  req.session.cart = cart.filter(item => item.productId !== parseInt(req.params.productId));
+  req.session.cart = (req.session.cart || []).filter(i => i.productId !== parseInt(req.params.productId));
   res.json({ success: true, cart: req.session.cart });
 });
 
+// Checkout & Payment Gateway Stub
 app.post('/api/checkout', auth, (req, res) => {
   const userId = req.session.userId;
   const cart = req.session.cart || [];
@@ -167,7 +179,12 @@ app.post('/api/checkout', auth, (req, res) => {
     orderItems.push({ productId: item.productId, quantity: item.quantity, price: product.price });
   }
 
-  const orderResult = db.prepare('INSERT INTO orders (user_id, total, status) VALUES (?, ?, ?)').run(userId, total, 'pending');
+  // ponytail: payment gateway integration, add when payment provider selected
+  const paymentUrl = `http://localhost:3001/payment/${Date.now()}`;
+  
+  const orderResult = db.prepare('INSERT INTO orders (user_id, total, status, payment_status, payment_url) VALUES (?, ?, ?, ?, ?)').run(
+    userId, total, 'pending', 'unpaid', paymentUrl
+  );
   const orderId = orderResult.lastInsertRowid;
 
   const itemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
@@ -181,17 +198,33 @@ app.post('/api/checkout', auth, (req, res) => {
     success: true,
     orderId,
     total,
+    paymentUrl,
     invoice: {
       orderId,
       userId,
       total,
       items: orderItems,
-      createdAt: new Date().toISOString(),
-      paymentUrl: `/payment/${orderId}`
+      createdAt: new Date().toISOString()
     }
   });
 });
 
+// Payment gateway stub
+app.get('/payment/:id', (req, res) => {
+  res.send(`
+    <html>
+      <head><title>Payment Gateway Stub</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>Payment Gateway (Stub)</h1>
+        <p>Payment ID: ${req.params.id}</p>
+        <p>Status: Menunggu integrasi payment gateway</p>
+        <a href="http://localhost:3000">Kembali ke toko</a>
+      </body>
+    </html>
+  `);
+});
+
+// Orders
 app.get('/api/orders', auth, (req, res) => {
   const orders = db.prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC').all(req.session.userId);
   res.json(orders);
@@ -204,8 +237,6 @@ app.get('/api/orders/:id', auth, (req, res) => {
   res.json({ ...order, items });
 });
 
-app.use(express.static('.'));
-
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Backend API: http://localhost:${PORT}`);
 });

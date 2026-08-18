@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'LiquidStore - Digital Assets',
-  description: 'Premium digital goods with glassmorphism aesthetic',
+  title: 'Toko Digital - Payment Gateway Ready',
+  description: 'E-commerce digital goods dengan payment gateway integration',
 };
 
 export default function RootLayout({ children }) {
